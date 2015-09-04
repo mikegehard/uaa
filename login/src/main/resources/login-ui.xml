@@ -82,10 +82,11 @@
 
     <http name="invitationsSecurity"
           entry-point-ref="loginEntryPoint"
-          use-expressions="false"
+          use-expressions="true"
           pattern="/invitations/**"
           xmlns="http://www.springframework.org/schema/security">
         <access-denied-handler ref="loginEntryPoint"/>
+        <intercept-url pattern="/invitations/new" access="#oauth2.hasAnyScope('zones.write')" method="POST"/>
         <intercept-url pattern="/invitations/accept" access="IS_AUTHENTICATED_ANONYMOUSLY" method="GET"/>
         <intercept-url pattern="/**" access="IS_AUTHENTICATED_FULLY" />
         <csrf disabled="false"/>

@@ -22,6 +22,12 @@ public class LoginServerConfig {
 
     @Bean
     @Conditional(InviteUsersCondition.class)
+    public InvitationsEndpoint invitationsEndpoint() {
+        return new InvitationsEndpoint();
+    }
+
+    @Bean
+    @Conditional(InviteUsersCondition.class)
     public InvitationsController invitationsController(InvitationsService invitationsService) {
         return new InvitationsController(invitationsService);
     }
