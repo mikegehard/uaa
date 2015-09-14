@@ -38,6 +38,7 @@ import org.cloudfoundry.identity.uaa.scim.jdbc.ScimSearchQueryConverter;
 import org.cloudfoundry.identity.uaa.scim.test.TestUtils;
 import org.cloudfoundry.identity.uaa.scim.validate.PasswordValidator;
 import org.cloudfoundry.identity.uaa.test.JdbcTestBase;
+import org.cloudfoundry.identity.uaa.zone.IdentityProviderProvisioning;
 import org.cloudfoundry.identity.uaa.zone.IdentityZone;
 import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
 import org.junit.After;
@@ -68,6 +69,7 @@ import java.util.Map;
 import java.util.Set;
 
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.endsWith;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -107,8 +109,10 @@ public class ScimUserEndpointsTests extends JdbcTestBase{
 
     private PasswordValidator mockPasswordValidator;
 
+    private IdentityProviderProvisioning providerProvisioning;
+
     @Before
-    public void setUpEndpoints() {
+    public void setUpEndpoints() throws Exception {
         endpoints = new ScimUserEndpoints();
         IdentityZoneHolder.clear();
         JdbcPagingListFactory pagingListFactory = new JdbcPagingListFactory(jdbcTemplate, new DefaultLimitSqlAdapter());
@@ -154,6 +158,11 @@ public class ScimUserEndpointsTests extends JdbcTestBase{
 
         am = new JdbcApprovalStore(jdbcTemplate, pagingListFactory, new ScimSearchQueryConverter());
         endpoints.setApprovalStore(am);
+
+        providerProvisioning = mock(IdentityProviderProvisioning.class);
+        endpoints.setProviderProvisioning(providerProvisioning);
+
+        endpoints.afterPropertiesSet();
     }
 
     @After

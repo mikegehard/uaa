@@ -33,6 +33,7 @@ import org.cloudfoundry.identity.uaa.scim.exception.ScimResourceConflictExceptio
 import org.cloudfoundry.identity.uaa.scim.validate.PasswordValidator;
 import org.cloudfoundry.identity.uaa.util.UaaPagingUtils;
 import org.cloudfoundry.identity.uaa.util.UaaStringUtils;
+import org.cloudfoundry.identity.uaa.zone.IdentityProviderProvisioning;
 import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
 import org.springframework.beans.factory.InitializingBean;
 import org.springframework.dao.OptimisticLockingFailureException;
@@ -100,6 +101,8 @@ public class ScimUserEndpoints implements InitializingBean {
     private ResourceMonitor<ScimUser> scimUserResourceMonitor;
 
     private ScimGroupMembershipManager membershipManager;
+
+    private IdentityProviderProvisioning providerProvisioning;
 
     private ApprovalStore approvalStore;
 
@@ -414,6 +417,7 @@ public class ScimUserEndpoints implements InitializingBean {
         Assert.notNull(dao, "ScimUserProvisioning must be set");
         Assert.notNull(membershipManager, "ScimGroupMembershipManager must be set");
         Assert.notNull(approvalStore, "ApprovalStore must be set");
+        Assert.notNull(providerProvisioning, "Identity Provider Provisioning must be set");
     }
 
     private void addETagHeader(HttpServletResponse httpServletResponse, ScimUser scimUser) {
@@ -426,5 +430,9 @@ public class ScimUserEndpoints implements InitializingBean {
 
     public void setPasswordValidator(PasswordValidator passwordValidator) {
         this.passwordValidator = passwordValidator;
+    }
+
+    public void setProviderProvisioning(IdentityProviderProvisioning providerProvisioning) {
+        this.providerProvisioning = providerProvisioning;
     }
 }
