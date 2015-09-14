@@ -258,6 +258,21 @@ public class ScimUserEndpoints implements InitializingBean {
         }
     }
 
+    public SearchResults<?> findUsers(
+        String attributesCommaSeparated,
+        String filter,
+        String sortBy,
+        String sortOrder,
+        int startIndex,
+        int count) {
+        return findUsers(attributesCommaSeparated,
+                         filter,
+                         sortBy,
+                         sortOrder,
+                         startIndex,count,
+                         false);
+    }
+
     @RequestMapping(value = "/Users", method = RequestMethod.GET)
     @ResponseBody
     public SearchResults<?> findUsers(
@@ -266,7 +281,8 @@ public class ScimUserEndpoints implements InitializingBean {
                     @RequestParam(required = false, defaultValue = "created") String sortBy,
                     @RequestParam(required = false, defaultValue = "ascending") String sortOrder,
                     @RequestParam(required = false, defaultValue = "1") int startIndex,
-                    @RequestParam(required = false, defaultValue = "100") int count) {
+                    @RequestParam(required = false, defaultValue = "100") int count,
+                    @RequestParam(required = false, defaultValue = "false") boolean activeIdp) {
 
         if (startIndex < 1) {
             startIndex = 1;
@@ -291,7 +307,7 @@ public class ScimUserEndpoints implements InitializingBean {
 
         if (!StringUtils.hasLength(attributesCommaSeparated)) {
             // Return all user data
-            return new SearchResults<ScimUser>(Arrays.asList(ScimCore.SCHEMAS), input, startIndex, count, result.size());
+            return new SearchResults<>(Arrays.asList(ScimCore.SCHEMAS), input, startIndex, count, result.size());
         }
 
         AttributeNameMapper mapper = new SimpleAttributeNameMapper(Collections.<String, String> singletonMap(

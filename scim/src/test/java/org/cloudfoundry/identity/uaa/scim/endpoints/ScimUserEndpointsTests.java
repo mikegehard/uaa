@@ -37,13 +37,11 @@ import org.cloudfoundry.identity.uaa.scim.jdbc.JdbcScimUserProvisioning;
 import org.cloudfoundry.identity.uaa.scim.jdbc.ScimSearchQueryConverter;
 import org.cloudfoundry.identity.uaa.scim.test.TestUtils;
 import org.cloudfoundry.identity.uaa.scim.validate.PasswordValidator;
+import org.cloudfoundry.identity.uaa.test.JdbcTestBase;
 import org.cloudfoundry.identity.uaa.zone.IdentityZone;
 import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
-import org.flywaydb.core.Flyway;
 import org.junit.After;
-import org.junit.AfterClass;
 import org.junit.Before;
-import org.junit.BeforeClass;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
@@ -53,9 +51,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.converter.HttpMessageConversionException;
 import org.springframework.http.converter.HttpMessageConverter;
 import org.springframework.jdbc.BadSqlGrammarException;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabase;
-import org.springframework.jdbc.datasource.embedded.EmbeddedDatabaseBuilder;
 import org.springframework.mock.web.MockHttpServletRequest;
 import org.springframework.mock.web.MockHttpServletResponse;
 import org.springframework.security.crypto.password.NoOpPasswordEncoder;
@@ -89,11 +84,8 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyZeroInteractions;
 import static org.mockito.Mockito.when;
 
-/**
- * @author Dave Syer
- * @author Luke Taylor
- */
-public class ScimUserEndpointsTests {
+
+public class ScimUserEndpointsTests extends JdbcTestBase{
 
     public static final String JDSA_VMWARE_COM = "jd'sa@vmware.com";
     @Rule
@@ -113,26 +105,12 @@ public class ScimUserEndpointsTests {
 
     private JdbcApprovalStore am;
 
-    private static EmbeddedDatabase database;
     private PasswordValidator mockPasswordValidator;
 
-    @BeforeClass
-    public static void setUpDatabase() throws Exception {
-        EmbeddedDatabaseBuilder builder = new EmbeddedDatabaseBuilder();
-        database = builder.build();
-        Flyway flyway = new Flyway();
-        flyway.setInitVersion("1.5.2");
-        flyway.setLocations("classpath:/org/cloudfoundry/identity/uaa/db/hsqldb/");
-        flyway.setDataSource(database);
-        flyway.migrate();
-    }
-
     @Before
-    public void setUp() {
+    public void setUpEndpoints() {
         endpoints = new ScimUserEndpoints();
-
         IdentityZoneHolder.clear();
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(database);
         JdbcPagingListFactory pagingListFactory = new JdbcPagingListFactory(jdbcTemplate, new DefaultLimitSqlAdapter());
         dao = new JdbcScimUserProvisioning(jdbcTemplate, pagingListFactory);
         dao.setPasswordEncoder(NoOpPasswordEncoder.getInstance());
@@ -178,16 +156,9 @@ public class ScimUserEndpointsTests {
         endpoints.setApprovalStore(am);
     }
 
-    @AfterClass
-    public static void tearDown() throws Exception {
-        if (database != null) {
-            database.shutdown();
-        }
-    }
-
     @After
     public void cleanUp() throws Exception {
-        TestUtils.deleteFrom(database, "group_membership", "users", "groups", "authz_approvals");
+        TestUtils.deleteFrom(dataSource, "group_membership", "users", "groups", "authz_approvals");
         IdentityZoneHolder.clear();
     }
 
@@ -307,7 +278,6 @@ public class ScimUserEndpointsTests {
         user.addEmail("dsyer@vmware.com");
         ScimUser created = endpoints.createUser(user, new MockHttpServletResponse());
         assertNull("A newly created user revealed its password", created.getPassword());
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(database);
         String password = jdbcTemplate.queryForObject("select password from users where id=?", String.class,
                 created.getId());
         // Generated password...
@@ -335,7 +305,6 @@ public class ScimUserEndpointsTests {
             String message = e.getMessage();
             assertTrue("Wrong message: " + message, message.contains("email"));
         }
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(database);
         int count = jdbcTemplate.queryForInt("select count(*) from users where userName=?", "dave");
         assertEquals(0, count);
     }
@@ -375,7 +344,6 @@ public class ScimUserEndpointsTests {
         ReflectionTestUtils.setField(user, "password", "foo");
         ScimUser created = endpoints.createUser(user, new MockHttpServletResponse());
         assertNull("A newly created user revealed its password", created.getPassword());
-        JdbcTemplate jdbcTemplate = new JdbcTemplate(database);
         String password = jdbcTemplate.queryForObject("select password from users where id=?", String.class,
                 created.getId());
         assertEquals("foo", password);
