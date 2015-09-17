@@ -123,10 +123,10 @@ public class MockMvcUtils {
         return new MockMvcUtils();
     }
 
-    public static void setInternalUserManagement(boolean allowUserManagement, ApplicationContext applicationContext) {
+    public static void setDisableInternalUserManagement(boolean disableUserManagement, ApplicationContext applicationContext) {
         IdentityProviderProvisioning identityProviderProvisioning = applicationContext.getBean(IdentityProviderProvisioning.class);
         IdentityProvider idp = identityProviderProvisioning.retrieveByOrigin(Origin.UAA, "uaa");
-        idp.setAllowInternalUserManagement(allowUserManagement);
+        idp.setDisableInternalUserManagement(disableUserManagement);
         identityProviderProvisioning.update(idp);
     }
 
