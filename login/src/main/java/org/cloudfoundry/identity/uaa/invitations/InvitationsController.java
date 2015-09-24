@@ -1,5 +1,6 @@
 package org.cloudfoundry.identity.uaa.invitations;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.cloudfoundry.identity.uaa.AbstractIdentityProviderDefinition;
@@ -9,10 +10,9 @@ import org.cloudfoundry.identity.uaa.authentication.UaaAuthenticationDetails;
 import org.cloudfoundry.identity.uaa.authentication.UaaPrincipal;
 import org.cloudfoundry.identity.uaa.authentication.manager.DynamicZoneAwareAuthenticationManager;
 import org.cloudfoundry.identity.uaa.client.ClientConstants;
-import org.cloudfoundry.identity.uaa.error.UaaException;
+import org.cloudfoundry.identity.uaa.codestore.ExpiringCode;
+import org.cloudfoundry.identity.uaa.codestore.ExpiringCodeStore;
 import org.cloudfoundry.identity.uaa.ldap.LdapIdentityProviderDefinition;
-import org.cloudfoundry.identity.uaa.login.ExpiringCodeService;
-import org.cloudfoundry.identity.uaa.login.ExpiringCodeService.CodeNotFoundException;
 import org.cloudfoundry.identity.uaa.login.PasswordConfirmationValidation;
 import org.cloudfoundry.identity.uaa.login.saml.SamlIdentityProviderDefinition;
 import org.cloudfoundry.identity.uaa.login.saml.SamlRedirectUtils;
@@ -40,15 +40,13 @@ import org.springframework.security.oauth2.provider.NoSuchClientException;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.util.StringUtils;
-import org.springframework.validation.BindingResult;
-import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import javax.validation.Valid;
 import java.io.IOException;
+import java.sql.Timestamp;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -66,7 +64,7 @@ public class InvitationsController {
 
     private final InvitationsService invitationsService;
     @Autowired @Qualifier("uaaPasswordValidator") private PasswordValidator passwordValidator;
-    @Autowired private ExpiringCodeService expiringCodeService;
+    @Autowired private ExpiringCodeStore expiringCodeStore;
     @Autowired private IdentityProviderProvisioning providerProvisioning;
     @Autowired private ClientDetailsService clientDetailsService;
     @Autowired private DynamicZoneAwareAuthenticationManager zoneAwareAuthenticationManager;
@@ -157,71 +155,42 @@ public class InvitationsController {
         return providers;
     }
 
-    @RequestMapping(value = "/new", method = GET)
-    public String newInvitePage(Model model,
-                                @RequestParam(required = false, value = "client_id") String clientId,
-                                @RequestParam(required = false, value = "redirect_uri") String redirectUri) {
-        model.addAttribute("client_id", clientId);
-        model.addAttribute("redirect_uri", redirectUri);
-        return "invitations/new_invite";
-    }
-
-
-    @RequestMapping(value = "/new.do", method = POST, params = {"email"})
-    public String sendInvitationEmail(@Valid @ModelAttribute("email") ValidEmail email, BindingResult result,
-                                       @RequestParam(defaultValue = "", value = "client_id") String clientId,
-                                      @RequestParam(defaultValue = "", value = "redirect_uri") String redirectUri,
-                                      Model model,
-                                      HttpServletResponse response) {
-        if (result.hasErrors()) {
-            return handleUnprocessableEntity(model, response, "error_message_code", "invalid_email", "invitations/new_invite");
-        }
-
-        UaaPrincipal p = ((UaaPrincipal) SecurityContextHolder.getContext().getAuthentication().getPrincipal());
-        String currentUser = p.getName();
-        try {
-           invitationsService.inviteUser(email.getEmail(), currentUser, clientId, redirectUri);
-        } catch (UaaException e) {
-           return handleUnprocessableEntity(model, response, "error_message_code", "existing_user", "invitations/new_invite");
-        }
-        return "redirect:sent";
-    }
-
-    @RequestMapping(value = "sent", method = GET)
-    public String inviteSentPage() {
-        return "invitations/invite_sent";
-    }
-
     @RequestMapping(value = "/accept", method = GET, params = {"code"})
     public String acceptInvitePage(@RequestParam String code, Model model, HttpServletRequest request, HttpServletResponse response) throws IOException {
-        try {
-            Map<String, String> codeData = expiringCodeService.verifyCode(code);
-            List<IdentityProvider> providers = filterIdpsForClientAndEmailDomain(codeData.get("client_id"), codeData.get("email"));
-            if (providers!=null && providers.size()==0) {
-                logger.debug(String.format("No available invitation providers for email:%s, id:%s", codeData.get("email"), codeData.get("user_id")));
-                return handleUnprocessableEntity(model, response, "error_message_code", "no_suitable_idp", "invitations/accept_invite");
-            } else {
-                UaaPrincipal uaaPrincipal = new UaaPrincipal(codeData.get("user_id"), codeData.get("email"), codeData.get("email"), Origin.UNKNOWN, null, IdentityZoneHolder.get().getId());
-                UaaAuthentication token = new UaaAuthentication(uaaPrincipal, UaaAuthority.USER_AUTHORITIES, new UaaAuthenticationDetails(request));
-                SecurityContextHolder.getContext().setAuthentication(token);
-                if (providers != null && providers.size() == 1 && Origin.SAML.equals(providers.get(0).getType())) {
-                    SamlIdentityProviderDefinition definition = providers.get(0).getConfigValue(SamlIdentityProviderDefinition.class);
-                    String redirect = "redirect:/" + SamlRedirectUtils.getIdpRedirectUrl(definition, getSpEntityID());
-                    logger.debug(String.format("Redirecting invitation for email:%s, id:%s single SAML IDP URL:%s", codeData.get("email"), codeData.get("user_id"), redirect));
-                    return redirect;
-                } else {
-                    getProvidersByType(model, providers, Origin.UAA);
-                    getProvidersByType(model, providers, Origin.SAML);
-                    getProvidersByType(model, providers, Origin.LDAP);
-                    model.addAttribute("entityID", SamlRedirectUtils.getZonifiedEntityId(getSpEntityID()));
-                    logger.debug(String.format("Sending user to accept invitation page email:%s, id:%s", codeData.get("email"), codeData.get("user_id")));
-                }
-            }
-            model.addAllAttributes(codeData);
-            return "invitations/accept_invite";
-        } catch (CodeNotFoundException e) {
+
+        ExpiringCode expiringCode = expiringCodeStore.retrieveCode(code);
+        if (expiringCode==null) {
             return handleUnprocessableEntity(model, response, "error_message_code", "code_expired", "invitations/accept_invite");
         }
+
+        Map<String, String> codeData = JsonUtils.readValue(expiringCode.getData(), new TypeReference<Map<String, String>>() {});
+
+        //todo: finish!
+
+        ExpiringCode newCode = expiringCodeStore.generateCode(expiringCode.getData(), new Timestamp(System.currentTimeMillis()+(1000*60*30)));
+        List<IdentityProvider> providers = filterIdpsForClientAndEmailDomain(codeData.get("client_id"), codeData.get("email"));
+        if (providers!=null && providers.size()==0) {
+            logger.debug(String.format("No available invitation providers for email:%s, id:%s", codeData.get("email"), codeData.get("user_id")));
+            return handleUnprocessableEntity(model, response, "error_message_code", "no_suitable_idp", "invitations/accept_invite");
+        } else {
+            UaaPrincipal uaaPrincipal = new UaaPrincipal(codeData.get("user_id"), codeData.get("email"), codeData.get("email"), Origin.UNKNOWN, null, IdentityZoneHolder.get().getId());
+            UaaAuthentication token = new UaaAuthentication(uaaPrincipal, UaaAuthority.USER_AUTHORITIES, new UaaAuthenticationDetails(request));
+            SecurityContextHolder.getContext().setAuthentication(token);
+            if (providers != null && providers.size() == 1 && Origin.SAML.equals(providers.get(0).getType())) {
+                SamlIdentityProviderDefinition definition = providers.get(0).getConfigValue(SamlIdentityProviderDefinition.class);
+                String redirect = "redirect:/" + SamlRedirectUtils.getIdpRedirectUrl(definition, getSpEntityID());
+                logger.debug(String.format("Redirecting invitation for email:%s, id:%s single SAML IDP URL:%s", codeData.get("email"), codeData.get("user_id"), redirect));
+                return redirect;
+            } else {
+                getProvidersByType(model, providers, Origin.UAA);
+                getProvidersByType(model, providers, Origin.SAML);
+                getProvidersByType(model, providers, Origin.LDAP);
+                model.addAttribute("entityID", SamlRedirectUtils.getZonifiedEntityId(getSpEntityID()));
+                logger.debug(String.format("Sending user to accept invitation page email:%s, id:%s", codeData.get("email"), codeData.get("user_id")));
+            }
+        }
+        model.addAllAttributes(codeData);
+        return "invitations/accept_invite";
     }
 
     protected void getProvidersByType(Model model, List<IdentityProvider> providers, String type) {
@@ -241,6 +210,7 @@ public class InvitationsController {
     @RequestMapping(value = "/accept_enterprise.do", method = POST)
     public String acceptLdapInvitation(@RequestParam("enterprise_username") String username,
                                        @RequestParam("enterprise_password") String password,
+                                       @RequestParam("enterprise_password") String code,
                                        @RequestParam(value = "client_id", required = false, defaultValue = "") String clientId,
                                        @RequestParam(value = "redirect_uri", required = false, defaultValue = "") String redirectUri,
                                        Model model, HttpServletResponse response) throws IOException {
@@ -269,7 +239,7 @@ public class InvitationsController {
             return handleUnprocessableEntity(model, response, "error_message", x.getMessage(), "invitations/accept_invite");
         }
 
-        String redirectLocation = invitationsService.acceptInvitation(principal.getId(), principal.getEmail(), password, clientId, redirectUri, Origin.LDAP).getRedirectUri();
+        String redirectLocation = invitationsService.acceptInvitation(code, password).getRedirectUri();
         SecurityContextHolder.getContext().setAuthentication(authentication);
         if (StringUtils.hasText(redirectUri)) {
             return "redirect:" + redirectUri;
@@ -283,6 +253,7 @@ public class InvitationsController {
     @RequestMapping(value = "/accept.do", method = POST)
     public String acceptInvitation(@RequestParam("password") String password,
                                    @RequestParam("password_confirmation") String passwordConfirmation,
+                                   @RequestParam("code") String code,
                                    @RequestParam(value = "client_id", required = false, defaultValue = "") String clientId,
                                    @RequestParam(value = "redirect_uri", required = false, defaultValue = "") String redirectUri,
                                    Model model,
@@ -303,7 +274,7 @@ public class InvitationsController {
             model.addAttribute("email", principal.getEmail());
             return handleUnprocessableEntity(model, response, "error_message", e.getMessagesAsOneString(), "invitations/accept_invite");
         }
-        InvitationsService.AcceptedInvitation invitation = invitationsService.acceptInvitation(principal.getId(), principal.getEmail(), password, clientId, redirectUri, Origin.UAA);
+        InvitationsService.AcceptedInvitation invitation = invitationsService.acceptInvitation(code, password);
         principal = new UaaPrincipal(
             invitation.getUser().getId(),
             invitation.getUser().getUserName(),

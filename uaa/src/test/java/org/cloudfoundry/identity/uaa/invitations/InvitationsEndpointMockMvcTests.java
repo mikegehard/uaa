@@ -8,36 +8,33 @@ import org.cloudfoundry.identity.uaa.mock.InjectedMockContextTest;
 import org.cloudfoundry.identity.uaa.mock.util.MockMvcUtils;
 import org.cloudfoundry.identity.uaa.scim.ScimGroup;
 import org.cloudfoundry.identity.uaa.scim.ScimGroupMember;
-import org.cloudfoundry.identity.uaa.scim.ScimGroupMembershipManager;
-import org.cloudfoundry.identity.uaa.scim.ScimGroupProvisioning;
 import org.cloudfoundry.identity.uaa.scim.ScimUser;
-import org.cloudfoundry.identity.uaa.scim.exception.MemberAlreadyExistsException;
 import org.cloudfoundry.identity.uaa.test.TestClient;
 import org.cloudfoundry.identity.uaa.util.ClientUtils;
-import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.mail.javamail.JavaMailSender;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.oauth2.common.util.OAuth2Utils;
 import org.springframework.security.oauth2.common.util.RandomValueStringGenerator;
-import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
 import javax.mail.Message;
-import java.lang.reflect.Array;
-import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.LinkedList;
-import java.util.List;
 
 import static org.cloudfoundry.identity.uaa.util.ClientUtils.createScimClient;
+import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertThat;
 import static org.springframework.http.MediaType.APPLICATION_JSON;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.cloudfoundry.identity.uaa.login.util.FakeJavaMailSender.MimeMessageWrapper;
 
@@ -76,6 +73,27 @@ public class InvitationsEndpointMockMvcTests extends InjectedMockContextTest {
     }
 
     @Test
+    public void test_Invitations_Accept_Get_Security() throws Exception {
+        getWebApplicationContext().getBean(JdbcTemplate.class).update("DELETE FROM expiring_code_store");
+        SecurityContext marissaContext = MockMvcUtils.utils().getMarissaSecurityContext(getWebApplicationContext());
+        String email = generator.generate()+"@test.org";
+
+        String userToken = MockMvcUtils.utils().getScimInviteUserToken(getMockMvc(), clientId, clientSecret);
+        sendRequestWithToken(userToken, "user1@example.com");
+
+        String code = getWebApplicationContext().getBean(JdbcTemplate.class).queryForObject("SELECT code FROM expiring_code_store", String.class);
+        assertNotNull("Invite Code Must be Present",code);
+
+        MockHttpServletRequestBuilder accept = get("/invitations/accept")
+            .param("code", code);
+
+        getMockMvc().perform(accept)
+            .andExpect(status().isOk())
+            .andExpect(content().string(containsString("<form method=\"post\" novalidate=\"novalidate\" action=\"/invitations/accept.do\">")));
+    }
+
+
+    @Test
     public void testInviteUserWithClientCredentials() throws Exception {
         String email = "user1@example.com";
         sendRequestWithToken(scimInviteToken, email);
@@ -89,28 +107,7 @@ public class InvitationsEndpointMockMvcTests extends InjectedMockContextTest {
 
     @Test
     public void testInviteUserWithUserCredentials() throws Exception {
-
-        // create a user (with the required permissions) to perform the actual /invite_users action
-        String username = generator.generate();
-        ScimUser user = new ScimUser(clientId, username, "given-name", "family-name");
-        user.setPrimaryEmail("email@example.com");
-        user.setPassword("password");
-        MockMvcUtils mockMvcUtils = new MockMvcUtils();
-        user = mockMvcUtils.createUser(this.getMockMvc(), adminToken, user);
-
-        for (String scope : new String[] {"scim.read", "scim.invite"}) {
-            ScimGroupMember member = new ScimGroupMember(user.getId(), ScimGroupMember.Type.USER, Arrays.asList(ScimGroupMember.Role.READER));
-
-            ScimGroup group = mockMvcUtils.getGroup(getMockMvc(), adminToken, scope);
-            group.getMembers().add(member);
-            mockMvcUtils.updateGroup(getMockMvc(), adminToken, group);
-            user.getGroups().add(new ScimUser.Group(group.getId(), scope));
-        }
-
-        // get a bearer token for the user
-        String userToken = testClient.getUserOAuthAccessToken(clientId, clientSecret, user.getUserName(), "password", "scim.read scim.invite");
-
-        // perform the actual invite
+        String userToken = MockMvcUtils.utils().getScimInviteUserToken(getMockMvc(), clientId, clientSecret);
         sendRequestWithToken(userToken, "user1@example.com");
     }
 
@@ -123,7 +120,9 @@ public class InvitationsEndpointMockMvcTests extends InjectedMockContextTest {
         objectMapper.setSerializationInclusion(JsonInclude.Include.NON_EMPTY);
         byte[] requestBody = objectMapper.writeValueAsBytes(invitations);
 
-        MvcResult result = getMockMvc().perform(post("/invite_users?client-id=" + clientId + "&redirect-uri=example.com")
+        MvcResult result = getMockMvc().perform(post("/invite_users")
+            .param(OAuth2Utils.CLIENT_ID, clientId)
+            .param(OAuth2Utils.REDIRECT_URI, "example.com")
             .header("Authorization", "Bearer " + token)
             .contentType(APPLICATION_JSON)
             .content(requestBody))

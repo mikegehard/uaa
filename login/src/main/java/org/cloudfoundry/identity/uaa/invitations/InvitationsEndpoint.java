@@ -4,9 +4,19 @@ import org.cloudfoundry.identity.uaa.authentication.UaaPrincipal;
 import org.cloudfoundry.identity.uaa.error.UaaException;
 import org.cloudfoundry.identity.uaa.scim.ScimUser;
 import org.cloudfoundry.identity.uaa.scim.ScimUserProvisioning;
+import org.cloudfoundry.identity.uaa.scim.exception.ScimResourceConflictException;
+import org.cloudfoundry.identity.uaa.util.DomainFilter;
+import org.cloudfoundry.identity.uaa.zone.IdentityProvider;
+import org.cloudfoundry.identity.uaa.zone.IdentityProviderProvisioning;
+import org.cloudfoundry.identity.uaa.zone.IdentityZoneHolder;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.common.util.RandomValueStringGenerator;
+import org.springframework.security.oauth2.provider.ClientDetails;
+import org.springframework.security.oauth2.provider.ClientDetailsService;
+import org.springframework.security.oauth2.provider.OAuth2Authentication;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -21,46 +31,62 @@ public class InvitationsEndpoint {
 
     private InvitationsService invitationsService;
     private ScimUserProvisioning users;
+    private IdentityProviderProvisioning providers;
+    private ClientDetailsService clients;
 
-    public InvitationsEndpoint(InvitationsService invitationsService, ScimUserProvisioning users) {
+    public InvitationsEndpoint(InvitationsService invitationsService,
+                               ScimUserProvisioning users,
+                               IdentityProviderProvisioning providers,
+                               ClientDetailsService clients) {
         this.invitationsService = invitationsService;
         this.users = users;
+        this.providers = providers;
+        this.clients = clients;
     }
 
     @RequestMapping(value="/invite_users", method= RequestMethod.POST, consumes="application/json")
-    public ResponseEntity<InvitationsResponse> inviteUsers(@RequestBody InvitationsRequest invitations, @RequestParam(value="client-id") String clientId, @RequestParam(value="redirect-uri") String redirectUri) {
+    public ResponseEntity<InvitationsResponse> inviteUsers(@RequestBody InvitationsRequest invitations, @RequestParam(value="client_id") String clientId, @RequestParam(value="redirect_uri") String redirectUri) {
 
         // todo: get clientId from token, if not supplied in clientId
 
-        // todo: investigate how to triangulate an existing user from their email, clientId and origin?
-        //       but where do we get origin from?
-        //       how to look up a user
-        //       1. Get Client using clientId
-        //       2. Get client's identity providers
-        //       3. Spin thru each identity provider looking for the one that handles the domain (of the email being invited)
-        //       4. Once identity provider has been found, look up it's 'origin key'
-        //       5. Query Users table based on email and 'origin key'
-
-        Object principal = SecurityContextHolder.getContext().getAuthentication().getPrincipal();
+        Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
         String currentUser = null;
-        if (principal instanceof UaaPrincipal)
-            currentUser = ((UaaPrincipal)principal).getName();
-        else if (principal instanceof String)
-            currentUser = (String)principal;
+        if (authentication instanceof OAuth2Authentication) {
+            OAuth2Authentication oAuth2Authentication = (OAuth2Authentication)authentication;
+            if (!oAuth2Authentication.isClientOnly()) {
+                currentUser = ((UaaPrincipal) oAuth2Authentication.getPrincipal()).getName();
+            } else {
+                currentUser = oAuth2Authentication.getOAuth2Request().getClientId();
+            }
+
+            if (clientId==null) {
+                clientId = oAuth2Authentication.getOAuth2Request().getClientId();
+            }
+        }
+
+
 
         InvitationsResponse invitationsResponse = new InvitationsResponse();
         List<String> newInvitesEmails = new ArrayList<>();
 
-        for (String email : invitations.getEmails()) {
+        DomainFilter filter = new DomainFilter();
+        List<IdentityProvider> activeProviders = providers.retrieveActive(IdentityZoneHolder.get().getId());
+        ClientDetails client = clients.loadClientByClientId(clientId);
+         for (String email : invitations.getEmails()) {
             try {
-                invitationsService.inviteUser(email, currentUser, clientId, redirectUri);
-                newInvitesEmails.add(email);
+                List<IdentityProvider> providers = filter.filter(activeProviders, client, email);
+                if (providers.size()==1) {
+                    ScimUser user = findOrCreateUser(email, providers.get(0).getOriginKey());
+                    invitationsService.inviteUser(user, currentUser, clientId, redirectUri);
+                    newInvitesEmails.add(email);
+                } else {
+                    throw new UnsupportedOperationException();
+                }
             } catch (UaaException uaae) {
                 invitationsResponse.getFailedInvites().add(email);
             }
         }
 
-        // todo: Convert to use the ids endpoint
         String where = "";
         for (int i=0; i < newInvitesEmails.size(); i++) {
             if (i > 0)
@@ -68,11 +94,28 @@ public class InvitationsEndpoint {
             where += "email eq \"" + newInvitesEmails.get(i) + "\"";
         }
         List<ScimUser> scimUsers = users.query(where);
-        for (ScimUser user : scimUsers) {
-            invitationsResponse.getNewInvites().add(user.getId());
+        for (ScimUser invitedUser : scimUsers) {
+            invitationsResponse.getNewInvites().add(invitedUser.getId());
         }
 
         return new ResponseEntity<>(invitationsResponse, HttpStatus.OK);
+    }
+
+    protected ScimUser findOrCreateUser(String email, String origin) {
+        email = email.trim().toLowerCase();
+        List<ScimUser> results = users.query(String.format("email eq \"%s\" and origin eq \"%s\"", email, origin));
+        if (results==null || results.size()==0) {
+            ScimUser user = new ScimUser(null, email, "", "");
+            user.setPrimaryEmail(email.toLowerCase());
+            user.setOrigin(origin);
+            user.setVerified(false);
+            user.setActive(true);
+            return users.createUser(user, new RandomValueStringGenerator(12).generate());
+        } else if (results.size()==1) {
+            return results.get(0);
+        } else {
+            throw new ScimResourceConflictException(String.format("Ambiguous users found for email:%s with origin:%s", email, origin));
+        }
     }
 
 }

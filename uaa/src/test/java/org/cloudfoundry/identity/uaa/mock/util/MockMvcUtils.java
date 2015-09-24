@@ -19,6 +19,7 @@ import org.apache.commons.codec.binary.Base64;
 import org.apache.commons.lang.RandomStringUtils;
 import org.cloudfoundry.identity.uaa.authentication.Origin;
 import org.cloudfoundry.identity.uaa.authentication.UaaPrincipal;
+import org.cloudfoundry.identity.uaa.invitations.InvitationsEndpointMockMvcTests;
 import org.cloudfoundry.identity.uaa.rest.SearchResults;
 import org.cloudfoundry.identity.uaa.scim.ScimGroup;
 import org.cloudfoundry.identity.uaa.scim.ScimGroupMember;
@@ -492,6 +493,28 @@ public class MockMvcUtils {
         return oauthToken.accessToken;
 
     }
+
+    public String getScimInviteUserToken(MockMvc mockMvc, String clientId, String clientSecret) throws Exception {
+        String adminToken = getClientCredentialsOAuthAccessToken(mockMvc, "admin", "adminsecret", "", null);
+        // create a user (with the required permissions) to perform the actual /invite_users action
+        String username = new RandomValueStringGenerator().generate();
+        ScimUser user = new ScimUser(clientId, username, "given-name", "family-name");
+        user.setPrimaryEmail("email@example.com");
+        user.setPassword("password");
+        user = createUser(mockMvc, adminToken, user);
+
+        String scope = "scim.invite";
+        ScimGroupMember member = new ScimGroupMember(user.getId(), ScimGroupMember.Type.USER, Arrays.asList(ScimGroupMember.Role.READER));
+
+        ScimGroup group = getGroup(mockMvc, adminToken, scope);
+        group.getMembers().add(member);
+        updateGroup(mockMvc, adminToken, group);
+        user.getGroups().add(new ScimUser.Group(group.getId(), scope));
+
+        // get a bearer token for the user
+        return getUserOAuthAccessToken(mockMvc, clientId, clientSecret, user.getUserName(), "password", "scim.invite");
+    }
+
 
     public String getClientCredentialsOAuthAccessToken(MockMvc mockMvc, String username, String password, String scope,
             String subdomain)
